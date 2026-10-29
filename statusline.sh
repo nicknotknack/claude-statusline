@@ -1,77 +1,30 @@
 #!/bin/bash
 # model · effort · context · git branch +added −removed      week · session ↻ reset
-shopt -s extglob
-E=$'\033'
+# Claude Code runs this in the session's current dir and passes session info as JSON on stdin.
+# jq and both git calls start in parallel; jq reads git output through --rawfile.
+exec jq -r \
+  --rawfile branch <(git symbolic-ref --short HEAD 2>/dev/null) \
+  --rawfile stat <(git --no-optional-locks diff HEAD --shortstat 2>/dev/null) '
+def paint($c): "\u001b[\($c)m\(.)\u001b[0m";
+def pct(color): floor as $p | "\($p)%" | paint($p | color);
+# context: green < 40, orange < 60, burgundy < 80, red; limits: green < 70, yellow < 90, red
+def ctx: if . >= 80 then 31 elif . >= 60 then "38;5;88" elif . >= 40 then "38;5;208" else 32 end;
+def lim: if . >= 90 then 31 elif . >= 70 then 33 else 32 end;
+# $stat is " 3 files changed, 10 insertions(+), 2 deletions(-)"
+def num($w): $stat | capture("(?<n>[0-9]+) \($w)").n;
+def width: gsub("\u001b\\[[0-9;]*m"; "") | length;
 
-IFS=$'\x1f' read -r model effort ctx week session resets dir < <(jq -r '
-  def pct: if . == null then "" else floor end;
-  [ .model.display_name // "",
-    .effort.level // "",
-    (.context_window.used_percentage | pct),
-    (.rate_limits.seven_day.used_percentage | pct),
-    (.rate_limits.five_hour.used_percentage | pct),
-    (.rate_limits.five_hour.resets_at // "" | if . == "" then . else strflocaltime("%H:%M") end),
-    .workspace.current_dir // .cwd // ""
-  ] | map(tostring) | join("\u001f")')
-
-paint() { printf '%s[%sm%s%s[0m' "$E" "$1" "$2" "$E"; }
-
-# percentage colored by threshold: green < 70, yellow < 90, red otherwise
-color_pct() {
-  local c=32
-  (( $1 >= 70 )) && c=33
-  (( $1 >= 90 )) && c=31
-  paint "$c" "$1%"
-}
-
-parts=("$model")
-[ -n "$effort" ] && parts+=("$effort")
-# context: green < 40, orange < 60, burgundy < 80, red otherwise
-if [ -n "$ctx" ]; then
-  c=32
-  (( ctx >= 40 )) && c='38;5;208'
-  (( ctx >= 60 )) && c='38;5;88'
-  (( ctx >= 80 )) && c=31
-  parts+=("context: $(paint "$c" "$ctx%")")
-else
-  parts+=("context: –")
-fi
-
-branch=$(git -C "$dir" --no-optional-locks branch --show-current 2>/dev/null)
-if [ -n "$branch" ]; then
-  g=$'\xef\x82\x9b'" $branch"  # nerd font: nf-fa-github
-  # " 3 files changed, 10 insertions(+), 2 deletions(-)"
-  stat=$(git -C "$dir" --no-optional-locks diff HEAD --shortstat 2>/dev/null)
-  [[ $stat =~ ([0-9]+)\ insertion ]] && g+=" $(paint 32 "+${BASH_REMATCH[1]}")"
-  [[ $stat =~ ([0-9]+)\ deletion ]] && g+=" $(paint 31 "−${BASH_REMATCH[1]}")"
-  parts+=("$g")
-fi
-
-right=()
-[ -n "$week" ] && right+=("week: $(color_pct "$week")")
-if [ -n "$session" ]; then
-  s="session: $(color_pct "$session")"
-  [ -n "$resets" ] && s+=" ↻ $resets"
-  right+=("$s")
-fi
-
-join() { local p; out=""; for p in "$@"; do out+="${out:+ · }$p"; done; }
-# visible width of $1 without ANSI color codes, in characters
-LC_ALL=en_US.UTF-8
-width() { local t=${1//$E\[*([0-9;])m/}; w=${#t}; }
-
-join "${parts[@]}"; left=$out
-join "${right[@]}"; rside=$out
-
-if [ -z "$rside" ]; then
-  printf '%s\n' "$left"
-  exit
-fi
-# push week/session to the right edge; COLUMNS is set by Claude Code, keep a small margin for its padding
-width "$left"; gap=$(( ${COLUMNS:-0} - w - 4 ))
-width "$rside"; gap=$(( gap - w ))
-if (( gap >= 3 )); then
-  printf '%s%*s%s\n' "$left" "$gap" '' "$rside"
-else
-  printf '%s · %s\n' "$left" "$rside"
-fi
+([ .model.display_name, .effort.level,
+   "context: " + ((.context_window.used_percentage | values | pct(ctx)) // "–"),
+   ($branch | rtrimstr("\n") | select(. != "")
+     | ["\uf09b " + ., ("+" + num("ins") | paint(32)), ("−" + num("del") | paint(31))]
+     | join(" "))
+ ] | map(values) | join(" · ")) as $left
+| ([ (.rate_limits.seven_day.used_percentage | values | "week: " + pct(lim)),
+     (.rate_limits.five_hour | select(.used_percentage)
+       | ["session:", (.used_percentage | pct(lim)), (.resets_at | values | "↻ " + strflocaltime("%H:%M"))]
+       | join(" "))
+   ] | join(" · ")) as $right
+# push week/session to the right edge, keep a small margin for Claude Code padding
+| (($ENV.COLUMNS | tonumber? // 0) - ($left | width) - ($right | width) - 4) as $gap
+| if $right == "" then $left elif $gap >= 3 then $left + " " * $gap + $right else "\($left) · \($right)" end'
