@@ -27,4 +27,7 @@ def width: gsub("\u001b\\[[0-9;]*m"; "") | length;
    ] | join(" · ")) as $right
 # push week/session to the right edge, keep a small margin for Claude Code padding
 | (($ENV.COLUMNS | tonumber? // 0) - ($left | width) - ($right | width) - 4) as $gap
-| if $right == "" then $left elif $gap >= 3 then $left + " " * $gap + $right else "\($left) · \($right)" end'
+| if $right == "" then $left elif $gap >= 3 then $left + " " * $gap + $right else "\($left) · \($right)" end
+# extra row below the bar = gap before the permissions line; braille blank (U+2800) is not
+# whitespace, so Claude Code does not trim the row away (plain space / nbsp get trimmed)
+| . + "\n⠀"'
