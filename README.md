@@ -4,7 +4,7 @@ A fast, minimal status line for [Claude Code](https://claude.com/claude-code).
 
 ![preview](preview.svg)
 
-Model, effort, context, git branch with changed lines, weekly and 5-hour limits with reset time.
+Model, effort, context, git branch with changed lines, weekly and 5-hour limits with reset time, launch directory.
 Colors go from green to red as usage grows.
 
 ## Install
